@@ -1,136 +1,107 @@
 <!doctype html>
 <html lang="de">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
-  <title>LEAD-Mentoring – AR-Postkarte</title>
-  <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
-  <style>
-    html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#111;font-family:system-ui,-apple-system,sans-serif}
-    .ui{position:fixed;z-index:20;left:0;right:0;display:flex;justify-content:center;pointer-events:none;padding:0 16px;box-sizing:border-box}
-    #top{top:max(18px,env(safe-area-inset-top));}
-    #bottom{bottom:max(25px,env(safe-area-inset-bottom));}
-    .pill{max-width:440px;text-align:center;background:rgba(8,22,32,.86);color:white;padding:12px 18px;border-radius:16px;line-height:1.4;box-shadow:0 4px 22px #0005}
-    button{pointer-events:auto;border:0;border-radius:100px;background:#57c2e7;color:#092331;font-size:17px;font-weight:750;padding:15px 27px;box-shadow:0 4px 20px #0006;cursor:pointer}
-    button:disabled{opacity:.55;cursor:wait}
-    #start{display:none} #message{font-size:14px}
-    #adjust{position:fixed;right:12px;top:75px;z-index:25;background:#122431eb;color:white;border-radius:12px;padding:10px;font-size:12px;display:none;max-width:200px}
-    #adjust label{display:block;margin:7px 0} #adjust input{width:100%}
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>LEAD-Mentoring – AR-Postkarte</title>
+<script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#151515;font-family:system-ui,-apple-system,sans-serif}
+#status{position:fixed;z-index:30;top:max(14px,env(safe-area-inset-top));left:12px;right:12px;margin:auto;max-width:420px;text-align:center;color:#fff;background:rgba(5,20,30,.82);padding:12px;border-radius:14px;font-size:14px;pointer-events:none}
+#controls{position:fixed;z-index:31;bottom:max(25px,env(safe-area-inset-bottom));left:0;right:0;display:flex;justify-content:center;gap:8px;padding:0 12px}
+button{border:0;border-radius:30px;background:#58c6e9;color:#102a33;font-size:16px;font-weight:700;padding:13px 22px;cursor:pointer}
+button[hidden]{display:none!important}
+#debug{display:none;position:fixed;z-index:32;top:100px;right:8px;background:#152631ed;color:white;padding:12px;border-radius:12px;font-size:12px;width:190px}
+#debug label{display:block;margin:8px 0}#debug input[type=range]{width:100%}
+/* Verhindert, dass iOS das Video selbst als sichtbares HTML-Element zeichnet. */
+#personVideo{position:absolute!important;width:1px!important;height:1px!important;opacity:0!important;pointer-events:none!important;left:-100px!important;top:-100px!important}
+</style>
 </head>
 <body>
-  <div id="top" class="ui"><div id="message" class="pill">Bitte die Kamera auf die gesamte Postkarte richten.</div></div>
-  <div id="bottom" class="ui"><button id="start" type="button">▶ Video starten</button></div>
-  <div id="adjust">
-    <strong>Position feinjustieren</strong>
-    <label>Links / rechts <input id="x" type="range" min="-.2" max=".6" step=".005" value=".281"></label>
-    <label>Vorne / hinten <input id="y" type="range" min="-.6" max=".2" step=".005" value="-.238"></label>
-    <label>Größe <input id="h" type="range" min=".25" max="1.1" step=".01" value=".65"></label>
-    <div id="values"></div>
-  </div>
-
-  <a-scene mindar-image="imageTargetSrc: ./targets.mind; autoStart: true; uiScanning: no; uiLoading: yes; uiError: yes"
-           color-space="sRGB" renderer="colorManagement: true; physicallyCorrectLights: false; alpha: true"
-           vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false"
-           embedded>
-    <a-assets timeout="60000">
-      <video id="personVideo" src="./person.webm" preload="metadata" playsinline webkit-playsinline
-             crossorigin="anonymous"></video>
-    </a-assets>
-    <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
-    <a-entity id="target" mindar-image-target="targetIndex: 0">
-      <!-- MindAR: Bildbreite = 1; Mittelpunkt = (0,0). Quadratmitte ≈ (0.281,-0.238). -->
-      <a-entity id="figure" position="0.281 -0.238 0" rotation="0 0 0" visible="false">
-        <!-- Das Video wird per JS als aufrechte, transparente Ebene eingefügt. -->
-      </a-entity>
-    </a-entity>
-  </a-scene>
-
-  <script>
-  (() => {
-    const video = document.querySelector('#personVideo');
-    const target = document.querySelector('#target');
-    const figure = document.querySelector('#figure');
-    const start = document.querySelector('#start');
-    const message = document.querySelector('#message');
-    const adjust = document.querySelector('#adjust');
-    const params = new URLSearchParams(location.search);
-    let found = false, started = false, mesh = null, texture = null;
-    const state = {x:.281,y:-.238,h:.65};
-
-    function setMessage(s){message.textContent=s;}
-    function positionFigure(){
-      // Karte liegt in der XY-Ebene. Positive Z-Richtung ragt von der Karte zur Kamera.
-      // Ebene um +90° X drehen: Füße bei Z=0, Kopf bei Z=H.
-      figure.object3D.position.set(state.x,state.y,state.h/2);
-      if(mesh){mesh.geometry.dispose();mesh.geometry=new THREE.PlaneGeometry(state.h*16/9,state.h);}
-      document.querySelector('#values').textContent=`x=${state.x.toFixed(3)}, y=${state.y.toFixed(3)}, Höhe=${state.h.toFixed(2)}`;
-    }
-    function createVideoPlane(){
-      if(mesh) return;
-      texture = new THREE.VideoTexture(video);
-      texture.colorSpace = THREE.SRGBColorSpace;
-      texture.minFilter = THREE.LinearFilter;
-      texture.magFilter = THREE.LinearFilter;
-      texture.generateMipmaps = false;
-      const material = new THREE.MeshBasicMaterial({map:texture,transparent:true,side:THREE.DoubleSide,depthWrite:false,alphaTest:0.02});
-      mesh = new THREE.Mesh(new THREE.PlaneGeometry(state.h*16/9,state.h),material);
-      mesh.rotation.x = Math.PI/2;
-      mesh.renderOrder = 5;
-      figure.object3D.add(mesh);
-      positionFigure();
-    }
-    target.addEventListener('targetFound',()=>{
-      found=true;
-      if(!started){start.style.display='block';setMessage('Postkarte erkannt! Tippe auf „Video starten“.');}
-      else{figure.setAttribute('visible',true);setMessage('Postkarte erkannt.');}
-    });
-    target.addEventListener('targetLost',()=>{
-      found=false;start.style.display='none';figure.setAttribute('visible',false);
-      if(!video.paused) video.pause();
-      setMessage('Bitte die Kamera wieder auf die Postkarte richten.');
-    });
-    start.addEventListener('click',async()=>{
-      start.disabled=true;
-      setMessage('Video wird geladen …');
-      try{
-        if(!video.canPlayType('video/webm')) throw new Error('WebM wird von diesem Browser nicht unterstützt.');
-        createVideoPlane();
-        if (!started) video.currentTime=0;
-        await video.play(); // Direkt durch den Tipp ausgelöst: Ton darf starten.
-        started=true;
-        figure.setAttribute('visible',found);
-        start.style.display='none';
-        setMessage('Video läuft – halte die Postkarte im Bild.');
-      }catch(err){
-        console.error(err);
-        setMessage('Video konnte nicht gestartet werden. Auf iPhones kann WebM mit Transparenz eingeschränkt sein.');
-        start.disabled=false;
-        start.style.display=found?'block':'none';
-      }
-    });
-    video.addEventListener('ended',()=>{
-      started=false;figure.setAttribute('visible',false);
-      start.disabled=false;start.textContent='↻ Erneut abspielen';
-      if(found){start.style.display='block';setMessage('Video beendet. Du kannst es erneut starten.');}
-    });
-    // Bei erneutem Erkennen kann ein durch Trackingverlust pausiertes Video per Tipp fortgesetzt werden.
-    target.addEventListener('targetFound',async()=>{
-      if(started && video.paused && !video.ended){
-        start.textContent='▶ Video fortsetzen';start.disabled=false;start.style.display='block';
-        setMessage('Tippe, um das Video fortzusetzen.');
-      }
-    });
-    // Optional: ?debug=1 zeigt Regler zur Feinjustierung auf dem Smartphone.
-    if(params.get('debug')==='1'){
-      adjust.style.display='block';
-      for(const k of ['x','y','h']){
-        document.getElementById(k).addEventListener('input',e=>{state[k]=Number(e.target.value);positionFigure();});
-      }
-    }
-    positionFigure();
-  })();
-  </script>
+<div id="status">Bitte die gesamte Postkarte vor die Kamera halten.</div>
+<div id="controls"><button id="play" hidden>▶ Video starten</button></div>
+<div id="debug">
+<strong>AR-Feinjustierung</strong>
+<label>Links / rechts <input id="x" type="range" min="-.4" max=".65" step=".005" value=".281"></label>
+<label>Auf / ab auf der Karte <input id="y" type="range" min="-.6" max=".3" step=".005" value="-.238"></label>
+<label>Figurhöhe <input id="h" type="range" min=".2" max="1.5" step=".01" value=".85"></label>
+<label><input id="flip" type="checkbox" checked> Video vertikal umdrehen</label>
+<div id="values"></div>
+</div>
+<a-scene mindar-image="imageTargetSrc: ./targets.mind; autoStart: true; uiScanning: no; uiLoading: yes; uiError: yes" color-space="sRGB" renderer="colorManagement: true; alpha: true; antialias: true" vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false" embedded>
+<a-assets timeout="90000"><video id="personVideo" src="./person.webm" preload="metadata" playsinline webkit-playsinline crossorigin="anonymous"></video></a-assets>
+<a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+<a-entity id="target" mindar-image-target="targetIndex: 0">
+<!-- Quadratmitte auf dem Originalbild, bezogen auf Bildbreite 1 -->
+<a-entity id="figure" visible="false"></a-entity>
+</a-entity>
+</a-scene>
+<script>
+(()=>{
+ const video=document.getElementById('personVideo'),target=document.getElementById('target'),figure=document.getElementById('figure');
+ const play=document.getElementById('play'),status=document.getElementById('status'),debug=document.getElementById('debug');
+ const params=new URLSearchParams(location.search);
+ const s={x:.281,y:-.238,h:.85,flip:true};
+ let found=false,mesh=null,texture=null,started=false;
+ const tell=t=>status.textContent=t;
+ function update(){
+   // MindAR-Bild liegt in XY. Die Füße befinden sich über der Quadratmitte.
+   // +90° X richtet die Videofläche aus der Karte auf (in positive Z-Richtung).
+   figure.object3D.position.set(s.x,s.y,s.h/2);
+   if(mesh){mesh.geometry.dispose();mesh.geometry=new THREE.PlaneGeometry(s.h*16/9,s.h);}
+   if(texture){texture.flipY=!s.flip;texture.needsUpdate=true;}
+   document.getElementById('values').textContent=`x=${s.x.toFixed(3)} y=${s.y.toFixed(3)} Höhe=${s.h.toFixed(2)}`;
+ }
+ function createPlane(){
+   if(mesh)return;
+   texture=new THREE.VideoTexture(video);
+   texture.colorSpace=THREE.SRGBColorSpace;
+   texture.minFilter=THREE.LinearFilter;texture.magFilter=THREE.LinearFilter;texture.generateMipmaps=false;
+   // VideoTexture verwendet standardmäßig flipY=true. Umschaltbar für iOS/VP9.
+   const material=new THREE.MeshBasicMaterial({map:texture,transparent:true,side:THREE.DoubleSide,depthWrite:false,alphaTest:.015});
+   mesh=new THREE.Mesh(new THREE.PlaneGeometry(s.h*16/9,s.h),material);
+   mesh.rotation.x=Math.PI/2;
+   mesh.renderOrder=10;
+   figure.object3D.add(mesh);
+   update();
+ }
+ function showPlay(label){play.textContent=label;play.hidden=false;play.disabled=false;}
+ target.addEventListener('targetFound',()=>{
+   found=true;
+   if(started && !video.paused){figure.object3D.visible=true;tell('Postkarte erkannt – Video läuft.');}
+   else {figure.object3D.visible=false;showPlay(started?'▶ Video fortsetzen':'▶ Video starten');tell('Postkarte erkannt! Tippe auf „Video starten“.');}
+ });
+ target.addEventListener('targetLost',()=>{
+   found=false;figure.object3D.visible=false;play.hidden=true;
+   if(!video.paused)video.pause();
+   tell('Postkarte nicht erkannt. Bitte die gesamte Postkarte ins Bild halten.');
+ });
+ play.addEventListener('click',async()=>{
+   if(!found)return;
+   play.disabled=true;tell('Video wird geladen …');
+   try{
+     createPlane();
+     if(!started)video.currentTime=0;
+     await video.play();
+     started=true;figure.object3D.visible=found;play.hidden=true;
+     tell('Video läuft – halte die Postkarte im Bild.');
+   }catch(e){console.error('Video:',e);tell('Video konnte nicht starten. Bitte Safari/Chrome und WebM-Kompatibilität prüfen.');showPlay('▶ Erneut versuchen');}
+ });
+ video.addEventListener('ended',()=>{
+   started=false;figure.object3D.visible=false;
+   if(found){showPlay('↻ Erneut abspielen');tell('Video beendet.');}
+ });
+ video.addEventListener('error',()=>tell('Video konnte nicht geladen werden. Prüfe person.webm auf GitHub.'));
+ document.querySelector('a-scene').addEventListener('arReady',()=>tell('Kamera bereit. Bitte die gesamte Postkarte ins Bild halten.'));
+ document.querySelector('a-scene').addEventListener('arError',()=>tell('Kamera konnte nicht gestartet werden. Bitte Kameraberechtigung und Browser prüfen.'));
+ if(params.get('debug')==='1'){
+   debug.style.display='block';
+   for(const k of ['x','y','h'])document.getElementById(k).addEventListener('input',e=>{s[k]=Number(e.target.value);update();});
+   document.getElementById('flip').addEventListener('change',e=>{s.flip=e.target.checked;update();});
+ }
+ update();
+})();
+</script>
 </body>
 </html>
