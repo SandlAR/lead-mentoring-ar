@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>LEAD-Mentoring – AR-Postkarte (Feinkorrektur-Test)</title>
+<script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent!important;font-family:system-ui,-apple-system,sans-serif}
+/* Erfolgreicher iPhone-Kameratest: Kamera hinter transparentem WebGL-Canvas. */
+a-scene{position:fixed!important;inset:0;width:100%;height:100%;background:transparent!important}
+a-scene video:not(#personVideo){position:absolute!important;z-index:0!important;visibility:visible!important;opacity:1!important}
+a-scene canvas,canvas.a-canvas{position:absolute!important;z-index:1!important;background:transparent!important}
+#status{position:fixed;z-index:30;top:max(14px,env(safe-area-inset-top));left:12px;right:12px;margin:auto;max-width:420px;text-align:center;color:#fff;background:rgba(5,20,30,.82);padding:12px;border-radius:14px;font-size:14px;pointer-events:none}
+#controls{position:fixed;z-index:31;bottom:max(25px,env(safe-area-inset-bottom));left:0;right:0;display:flex;justify-content:center;gap:8px;padding:0 12px}
+button{border:0;border-radius:30px;background:#58c6e9;color:#102a33;font-size:16px;font-weight:700;padding:13px 22px;cursor:pointer}
+button[hidden]{display:none!important}
+#debug{display:none;position:fixed;z-index:32;top:100px;right:8px;background:#152631ed;color:white;padding:12px;border-radius:12px;font-size:12px;width:190px}
+#debug label{display:block;margin:8px 0}#debug input[type=range]{width:100%}
+/* Verhindert, dass iOS das Video selbst als sichtbares HTML-Element zeichnet. */
+#personVideo{position:absolute!important;width:1px!important;height:1px!important;opacity:0!important;pointer-events:none!important;left:-100px!important;top:-100px!important}
+</style>
+</head>
+<body>
+<div id="status">Bitte die gesamte Postkarte vor die Kamera halten.</div>
+<div id="controls"><button id="play" hidden>▶ Video starten</button></div>
+<div id="debug">
+<strong>AR-Feinjustierung</strong>
+<label>Links / rechts <input id="x" type="range" min="-.4" max=".65" step=".005" value=".281"></label>
+<label>Auf / ab auf der Karte <input id="y" type="range" min="-.6" max=".3" step=".005" value="-.238"></label>
+<label>Figurhöhe <input id="h" type="range" min=".2" max="1.5" step=".01" value=".85"></label>
+<label>Grünkorrektur <input id="green" type="range" min="0" max="1" step=".01" value=".55"></label>
+<label>Schwarzkorrektur <input id="black" type="range" min=".025" max=".14" step=".005" value=".065"></label>
+<label><input id="flip" type="checkbox"> Video vertikal umdrehen</label>
+<div id="values"></div>
+</div>
+<a-scene mindar-image="imageTargetSrc: ./targets.mind; autoStart: true; uiScanning: no; uiLoading: yes; uiError: yes" color-space="sRGB" renderer="colorManagement: true; alpha: true; antialias: true" vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false" embedded>
+<a-assets timeout="90000"><video id="personVideo" src="./person.webm" preload="metadata" playsinline webkit-playsinline crossorigin="anonymous"></video></a-assets>
+<a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+<a-entity id="target" mindar-image-target="targetIndex: 0">
+<!-- Quadratmitte auf dem Originalbild, bezogen auf Bildbreite 1; Test: frontale 2,5D-Figur -->
+<a-entity id="figure" visible="false"></a-entity>
+</a-entity>
+</a-scene>
+<script>
+(()=>{
+ const video=document.getElementById('personVideo'),target=document.getElementById('target'),figure=document.getElementById('figure');
+ const play=document.getElementById('play'),status=document.getElementById('status'),debug=document.getElementById('debug');
+ const params=new URLSearchParams(location.search);
+ const s={x:.281,y:-.238,h:.85,flip:false,green:.55,black:.065};
+ let found=false,mesh=null,texture=null,started=false;
+ const tell=t=>status.textContent=t;
+ function update(){
+   // MindAR-Bild liegt in XY. Die Füße befinden sich über der Quadratmitte.
+   // +90° X richtet die Videofläche aus der Karte auf (in positive Z-Richtung).
+   figure.object3D.position.set(s.x,s.y+s.h/2,0.035);
+   if(mesh){mesh.geometry.dispose();mesh.geometry=new THREE.PlaneGeometry(s.h*16/9,s.h);}
+   if(texture){texture.flipY=!s.flip;texture.needsUpdate=true;}
+    if(mesh){mesh.material.uniforms.greenStrength.value=s.green;mesh.material.uniforms.cutoff.value=s.black;}
+   document.getElementById('values').textContent=`x=${s.x.toFixed(3)} y=${s.y.toFixed(3)} Höhe=${s.h.toFixed(2)}`;
+ }
+ function createPlane(){
+   if(mesh)return;
+   texture=new THREE.VideoTexture(video);
+   texture.colorSpace=THREE.SRGBColorSpace;
+   texture.minFilter=THREE.LinearFilter;texture.magFilter=THREE.LinearFilter;texture.generateMipmaps=false;
+   // VideoTexture verwendet standardmäßig flipY=true. Umschaltbar für iOS/VP9.
+   // iOS kann den Alpha-Kanal von VP9/WebM verlieren. Schwarze Pixel deshalb
+   // nur für die Darstellung als transparente Pixel behandeln (Originaldatei bleibt unverändert).
+   const material=new THREE.ShaderMaterial({
+     uniforms:{map:{value:texture},cutoff:{value:0.065},greenStrength:{value:.55}},
+     vertexShader:`varying vec2 vUv; void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,
+     fragmentShader:`uniform sampler2D map; uniform float cutoff; uniform float greenStrength; varying vec2 vUv;
+        void main(){
+          vec4 c=texture2D(map,vUv);
+          float brightness=max(max(c.r,c.g),c.b);
+          float blackKey=smoothstep(cutoff,cutoff+0.065,brightness);
+          float dominance=c.g-max(c.r,c.b);
+          float greenSaturation=dominance/max(c.g,0.001);
+          // Ausschließlich im schmalen Zwischenraum der Beine stärker filtern.
+          // Der restliche Bildbereich behält exakt die bisherige Korrektur.
+          float betweenLegs=(1.0-smoothstep(0.035,0.085,abs(vUv.x-0.50)))
+                            *smoothstep(0.13,0.21,vUv.y)
+                            *(1.0-smoothstep(0.39,0.47,vUv.y));
+          float threshold=mix(0.16,0.045,greenStrength);
+          float localThreshold=mix(threshold,0.012,betweenLegs);
+          float greenMask=smoothstep(localThreshold,localThreshold+mix(0.085,0.038,betweenLegs),dominance)
+             *smoothstep(mix(0.16,0.06,betweenLegs),mix(0.38,0.20,betweenLegs),greenSaturation)
+             *smoothstep(mix(0.09,0.045,betweenLegs),mix(0.21,0.13,betweenLegs),c.g);
+          float a=c.a*blackKey*(1.0-greenMask);
+          vec3 rgb=c.rgb;
+          float edge=clamp(greenMask*1.6,0.0,1.0);
+          rgb.g=mix(rgb.g,min(rgb.g,(rgb.r+rgb.b)*0.5+0.025),edge*0.65);
+          if(a<0.012)discard;
+          gl_FragColor=vec4(rgb,a);
+        }`,
+     transparent:true,side:THREE.DoubleSide,depthWrite:false
+   });
+   mesh=new THREE.Mesh(new THREE.PlaneGeometry(s.h*16/9,s.h),material);
+   mesh.rotation.x=0; // Aufrecht und frontal lesbar; zunächst als 2,5D-Figur testen.
+   mesh.renderOrder=10;
+   figure.object3D.add(mesh);
+   update();
+ }
+ function showPlay(label){play.textContent=label;play.hidden=false;play.disabled=false;}
+ target.addEventListener('targetFound',()=>{
+   found=true;
+   if(started && !video.paused){figure.object3D.visible=true;tell('Postkarte erkannt – Video läuft.');}
+   else {figure.object3D.visible=false;showPlay(started?'▶ Video fortsetzen':'▶ Video starten');tell('Postkarte erkannt! Tippe auf „Video starten“.');}
+ });
+ target.addEventListener('targetLost',()=>{
+   found=false;figure.object3D.visible=false;play.hidden=true;
+   if(!video.paused)video.pause();
+   tell('Postkarte nicht erkannt. Bitte die gesamte Postkarte ins Bild halten.');
+ });
+ play.addEventListener('click',async()=>{
+   if(!found)return;
+   play.disabled=true;tell('Video wird geladen …');
+   try{
+     createPlane();
+     if(!started)video.currentTime=0;
+     await video.play();
+     started=true;figure.object3D.visible=found;play.hidden=true;
+     tell('Video läuft – Grünkorrektur optimiert (Test).');
+   }catch(e){console.error('Video:',e);tell('Video konnte nicht starten. Bitte Safari/Chrome und WebM-Kompatibilität prüfen.');showPlay('▶ Erneut versuchen');}
+ });
+ video.addEventListener('ended',()=>{
+   started=false;figure.object3D.visible=false;
+   if(found){showPlay('↻ Erneut abspielen');tell('Video beendet.');}
+ });
+ video.addEventListener('error',()=>tell('Video konnte nicht geladen werden. Prüfe person.webm auf GitHub.'));
+ document.querySelector('a-scene').addEventListener('arReady',()=>tell('Kamera bereit. Bitte die gesamte Postkarte ins Bild halten.'));
+ document.querySelector('a-scene').addEventListener('arError',()=>tell('Kamera konnte nicht gestartet werden. Bitte Kameraberechtigung und Browser prüfen.'));
+ if(params.get('debug')==='1'){
+   debug.style.display='block';
+   for(const k of ['x','y','h','green','black'])document.getElementById(k).addEventListener('input',e=>{s[k]=Number(e.target.value);update();});
+   document.getElementById('flip').addEventListener('change',e=>{s.flip=e.target.checked;update();});
+ }
+ update();
+})();
+</script>
+</body>
+</html>
